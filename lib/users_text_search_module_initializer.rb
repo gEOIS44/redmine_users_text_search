@@ -1,5 +1,7 @@
 Rails.configuration.to_prepare do
+  require_dependency 'users_text_search/hooks/users_text_search_view_hook'
   require_dependency 'users_text_search/patches/users_text_search_issue_query_patch'
   require_dependency 'users_text_search/patches/users_text_search_issues_controller_patch'
+  require_dependency 'users_text_search/patches/users_text_search_query_patch'
   require_dependency 'users_text_search/patches/users_text_search_time_entry_query_patch'
 end

@@ -1,17 +1,17 @@
 module RedmineUsersTextSearch
   module IssuesControllerPatch
     def index
-      if params.has_key?(:assigned_to_id)
+      if params.key?(:assigned_to_id)
         case params[:assigned_to_id]
         when "me"
           params[:assigned_to] = "#{User.current.name} (#{User.current.id})"
         else
           user = User.find(params[:assigned_to_id])
-          params[:assigned_to] = "#{user.name} (#{params[:assigned_to_id]})" if user.present?
+          params[:assigned_to] = "#{user.name} (#{user.id})" if user.present?
         end
       end
 
-      if params.has_key?(:author_id)
+      if params.key?(:author_id)
         case params[:author_id]
         when "me"
           params[:author] = "#{User.current.name} (#{User.current.id})"
