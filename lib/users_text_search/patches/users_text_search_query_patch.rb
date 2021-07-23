@@ -5,10 +5,15 @@ module RedmineUsersTextSearch
     def self.included(base)
       base.operators['me'] = :label_me unless base.operators.key?('me')
       base.operators['ot'] = :label_others unless base.operators.key?('ot')
+      base.operators['~~'] = :label_any_contains unless base.operators.key?('~~')
       unless base.operators_by_filter_type.key?(:user)
         base.operators_by_filter_type[:user] = base.operators_by_filter_type[:string]
-        base.operators_by_filter_type[:user] << 'me'
-        base.operators_by_filter_type[:user] << 'ot'
+        base.operators_by_filter_type[:user] << 'me' unless base.operators_by_filter_type[:user].include?('me')
+        base.operators_by_filter_type[:user] << 'ot' unless base.operators_by_filter_type[:user].include?('ot')
+        unless base.operators_by_filter_type[:user].include?('~~')
+          any_contains_position = base.operators_by_filter_type[:user].index('~') + 1
+          base.operators_by_filter_type[:user].insert(any_contains_position, '~~')
+        end
       end
     end
   end
@@ -26,7 +31,7 @@ module RedmineUsersTextSearch
     def sql_for_default_users_field(field, operator, value, table_name, column_name)
       user_ids = get_user_ids_for_filter(operator, value)
       case operator
-      when "=", "~", "me", "ot" # 等しい/含む/自分/自分以外
+      when "=", "~", "me", "ot", "~~" # 等しい/含む/自分/自分以外/いずれかを含む
         user_ids.present? ? "#{table_name}.#{column_name} IN (#{user_ids.join(',')})" : "1=0"
       when "!", "!~" # 等しくない/含まない
         user_ids.present? ? "(#{table_name}.#{column_name} NOT IN (#{user_ids.join(',')}) OR #{table_name}.#{column_name} IS NULL)" : "1=1"
@@ -50,11 +55,21 @@ module RedmineUsersTextSearch
     end
 
     def sql_for_field(field, operator, value, db_table, db_field, is_custom_filter=false)
+      return "1=0" if value.empty? && operator != "*" && operator != "!*"
+      return super(field, operator, value, db_table, db_field, is_custom_filter) unless is_custom_filter
+
+      custom_field = CustomField.find(field.delete("cf_").to_i)
+      return super(field, operator, value, db_table, db_field, is_custom_filter) unless custom_field.field_format == "user"
+
       case operator
       when "me"
         "#{db_table}.#{db_field} = #{User.current.id}"
       when "ot"
         "#{db_table}.#{db_field} <> #{User.current.id}"
+      when "=", "~", "~~" # 等しい/含む/いずれかを含む
+        "#{db_table}.#{db_field} IN (#{value.join(',')})"
+      when "!", "!~" # 等しくない/含まない
+        "#{db_table}.#{db_field} NOT IN (#{value.join(',')})"
       else
         super(field, operator, value, db_table, db_field, is_custom_filter)
       end
@@ -62,7 +77,7 @@ module RedmineUsersTextSearch
 
     def validate_query_filters
       filters.each_pair do |_filter, value|
-        if value[:operator] == "me" || value[:operator] == "ot"
+        if value[:operator] == "me" || value[:operator] == "ot" || value[:operator] == "~~"
           value[:extend_operator] = value[:operator]
           value[:operator] = "*"
         end
@@ -71,7 +86,7 @@ module RedmineUsersTextSearch
       super
 
       filters.each_pair do |_filter, value|
-        if value[:extend_operator] == "me" || value[:extend_operator] == "ot"
+        if value[:extend_operator] == "me" || value[:extend_operator] == "ot" || value[:extend_operator] == "~~"
           value[:operator] = value[:extend_operator]
         end
       end
@@ -92,18 +107,40 @@ module RedmineUsersTextSearch
         elsif value.first =~ /^(.+)\s+(.+)$/
           a = Regexp.last_match[1].to_s
           b = Regexp.last_match[2].to_s
+          condition = case Setting.user_format
+            when :firstname_lastname
+              "(firstname = ? and lastname = ?)"
+            when :firstname_lastinitial
+              "(firstname = ? and LEFT(lastname,1) = ?)"
+            when :firstinitial_lastname
+              "(LEFT(firstname,1) = ? and lastname = ?)"
+            when :lastname_firstname
+              "(lastname = ? and firstname = ?)"
+            when :lastname_comma_firstname
+              "(CONCAT(lastname,',') = ? and firstname = ?)"
+          end
+
           principal_ids = get_principal_ids
           if Setting.issue_group_assignment?
-            user_ids = Principal.where(id: principal_ids).where("((lastname = ? and firstname = ?)or(lastname = ? and firstname = ?))", a, b, b, a).pluck(:id)
+            user_ids = Principal.where(id: principal_ids).where(condition, a, b).pluck(:id) if condition.present?
           else
-            user_ids = User.where(id: principal_ids).where("((lastname = ? and firstname = ?)or(lastname = ? and firstname = ?))", a, b, b, a).pluck(:id)
+            user_ids = User.where(id: principal_ids).where(condition, a, b).pluck(:id) if condition.present?
           end
         else
+          condition = case Setting.user_format
+            when :firstname
+              "(firstname = ?)"
+            when :lastname
+              "(lastname = ?)"
+            when :username
+              "(login = ?)"
+          end
+
           principal_ids = get_principal_ids
           if Setting.issue_group_assignment?
-            user_ids = Principal.where(id: principal_ids).where(lastname: value.first).pluck(:id)
+            user_ids = Principal.where(id: principal_ids).where(condition, value.first).pluck(:id) if condition.present?
           else
-            user_ids = User.where(id: principal_ids).where(lastname: value.first).pluck(:id)
+            user_ids = User.where(id: principal_ids).where(condition, value.first).pluck(:id) if condition.present?
           end
         end
         user_ids = [user_ids, EmailAddress.where("address = ?", value.first).pluck(:user_id)].flatten.uniq
@@ -128,6 +165,15 @@ module RedmineUsersTextSearch
         user_ids = principal_ids - [User.current.id]
         if Setting.issue_group_assignment?
           user_ids -= User.current.group_ids
+        end
+      when "~~" # いずれかを含む
+        principal_ids = get_principal_ids
+        value.first.split.each do |filter_value|
+          if Setting.issue_group_assignment?
+            user_ids |= Principal.where(id: principal_ids).like(filter_value).pluck(:id)
+          else
+            user_ids |= User.where(id: principal_ids).like(filter_value).pluck(:id)
+          end
         end
       else
         raise "Unknown query operator #{operator}"

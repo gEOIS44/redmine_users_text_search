@@ -1,2 +1,4 @@
 ja:
   label_others: "自分以外"
+  label_any_contains: "いずれかを含む"
+  label_placeholder_message: "半角スペース区切りで指定"

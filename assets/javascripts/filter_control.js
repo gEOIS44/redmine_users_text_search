@@ -9,6 +9,9 @@ $(function(){
     if('original_type' in filterOptions && filterOptions['original_type'] != 'user'){
       $(this).children('option[value="me"]').remove();
       $(this).children('option[value="ot"]').remove();
+      $(this).children('option[value="~~"]').remove();
+    }else{
+      $(this).children('option[value="*~"]').remove();
     }
   });
 
@@ -29,4 +32,10 @@ function hideFilterTextbox(element){
     display = 'none';
   }
   element.parent().parent().find('input[type="text"]').css('display', display);
+
+  if(element.val() == '~~'){
+    element.parent().parent().find('input[type="text"]').attr('placeholder', "");
+  }else{
+    element.parent().parent().find('input[type="text"]').removeAttr('placeholder');
+  }
 }
